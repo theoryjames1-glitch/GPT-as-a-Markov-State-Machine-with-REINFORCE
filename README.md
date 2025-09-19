@@ -313,5 +313,113 @@ for t = 0 ... T-1:
 
 ---
 
+Yes. Run a small, controlled, nonstationary LM test.
+
+## Task
+
+Character-level LM on two drifting corpora.
+
+* Phase A (steps 0–N): Shakespeare subset.
+* Phase B (steps N–2N): Linux kernel comments.
+* Phase C (steps 2N–3N): Shakespeare again.
+  Goal: adapt fast at A→B, retain A at C without full relearn.
+
+## Models
+
+* Baseline: GPT-mini (causal, same size), AdamW, cosine LR.
+* AEON: same GPT + resonance gate, EMA resonance $m_t$, modulated step $\eta_\theta(a_t,m_t)$.
+
+## Data
+
+* Vocab: 128 ASCII.
+* Sequence length: 256.
+* Train split: 90%, valid: 10% per phase.
+* Batch: 32.
+* Steps per phase $N$: 10k. Total: 30k.
+
+## AEON knobs
+
+* EMA $\rho \in \{0.90,0.95,0.99\}$.
+* Gate: $g=\sigma(\alpha(m-\tau))$, $\alpha \in \{2,5,10\}$, $\tau=1.0$.
+* Scale: $\kappa=(1-g)\cdot0.8+g\cdot1.0$.
+* LR mod: $\eta_\text{eff}=\eta_0\cdot[(1-g)\cdot1.0+g\cdot\lambda]$, $\lambda \in \{1.0,1.5\}$.
+
+## Metrics
+
+* Valid perplexity (PPL) per phase set:
+
+  * PPL-A on A-dev, PPL-B on B-dev.
+* Forgetting:
+
+  * $F=\max_{t\le \text{B end}} \text{PPL-A}(t) - \text{PPL-A at A end}$.
+* Adaptation speed:
+
+  * Steps to reach 90% of best B PPL after phase switch.
+* Stability of training:
+
+  * Loss variance in sliding window.
+* AEON diagnostics:
+
+  * Track $m_t$, gate $g_t$, effective LR.
+
+## Hypotheses
+
+* AEON lowers $F$ and reduces adaptation steps at A→B.
+* AEON cuts loss variance during steady regimes without hurting best PPL.
+
+## Ablations
+
+* No gating (AEON off, identical code path).
+* Gating only on attention vs only on LR vs both.
+* Different $\rho,\alpha$.
+* Optional: add 5% label noise burst in B. Expect AEON to damp damage.
+
+## Training spec
+
+* Params: \~5–20M.
+* Optim: AdamW(β=(0.9,0.95)), wd=0.1.
+* Base LR: 3e-4, warmup 1k, cosine decay.
+* Seeds: {0,1,2,3,4}. Report mean ± std.
+
+## Minimal logging hooks (sketch)
+
+```python
+# each step
+loss = criterion(logits.view(-1,V), y.view(-1))
+m = rho*m + (1-rho)*loss.detach()
+g = torch.sigmoid(alpha*(m - tau))
+attn_scale = 0.8*(1-g) + 1.0*g
+lr_scale = 1.0*(1-g) + lambda_ * g
+for pg in optimizer.param_groups:
+    pg['lr'] = base_lr * lr_scale.item()
+
+log = {
+  'step': t,
+  'loss': loss.item(),
+  'm': float(m),
+  'g': float(g),
+  'attn_scale': float(attn_scale),
+  'lr_scale': float(lr_scale),
+  'ppl_A': eval_ppl(model, A_dev),
+  'ppl_B': eval_ppl(model, B_dev),
+}
+```
+
+## Success criteria
+
+* $F_\text{AEON} < F_\text{base}$ by ≥20%.
+* Adaptation steps reduced by ≥20%.
+* Comparable or better best PPL on both domains.
+
+## Reporting
+
+* Curves: PPL-A and PPL-B vs step with phase boundaries.
+* Overlays: $m_t$, $g_t$, LR scale.
+* Table: mean±std for forgetting and adaptation steps across seeds.
+* Brief sensitivity plot for $\rho,\alpha$.
+
+If you want, I can provide a ready-to-run script with the phase scheduler and logs.
+
+
 Would you like me to **expand this pseudocode into actual PyTorch-style code** (like the earlier skeleton) so you can directly run a toy AEON-GPT training loop with REINFORCE?
 
